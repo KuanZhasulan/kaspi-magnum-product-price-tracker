@@ -69,34 +69,24 @@ async function extractCards(page: Page): Promise<KaspiProduct[]> {
   );
 }
 
-/** Returns the total number of pages from pagination */
-async function getTotalPages(page: Page): Promise<number> {
+/** Returns true if the "Next" button exists and is not disabled */
+async function hasNextPage(page: Page): Promise<boolean> {
   return page.evaluate(() => {
-    const pages = Array.from(document.querySelectorAll(".pagination__el"))
-      .map((el) => parseInt(el.textContent?.trim() ?? "0", 10))
-      .filter((n) => !isNaN(n) && n > 0);
-    return pages.length ? Math.max(...pages) : 1;
+    const els = Array.from(document.querySelectorAll(".pagination__el"));
+    const next = els.find((el) => el.textContent?.includes("Следующая"));
+    return !!next && !next.classList.contains("_disabled");
   });
 }
 
-/** Navigate to a specific page number by clicking the pagination element */
-async function goToPage(page: Page, pageNum: number): Promise<boolean> {
-  const clicked = await page.evaluate((target) => {
+/** Click the "Next" button and wait for cards to reload */
+async function clickNext(page: Page): Promise<void> {
+  await page.evaluate(() => {
     const els = Array.from(document.querySelectorAll(".pagination__el"));
-    const el = els.find((e) => e.textContent?.trim() === String(target));
-    if (el) {
-      (el as HTMLElement).click();
-      return true;
-    }
-    return false;
-  }, pageNum);
-
-  if (!clicked) return false;
-
-  // Wait for new cards to load
+    const next = els.find((el) => el.textContent?.includes("Следующая")) as HTMLElement | undefined;
+    next?.click();
+  });
   await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
   await page.waitForSelector(".item-card", { timeout: 15000 }).catch(() => {});
-  return true;
 }
 
 export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<KaspiProduct[]> {
@@ -114,21 +104,11 @@ export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<Ka
     await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
     await page.waitForSelector(".item-card", { timeout: 20000 });
 
-    const totalPages = await getTotalPages(page);
-    console.log(`Total pages: ${totalPages}`);
-
     let collected = 0;
+    let pageNum = 1;
 
-    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+    while (true) {
       if (collected >= MAX_PRODUCTS) break;
-
-      if (pageNum > 1) {
-        const ok = await goToPage(page, pageNum);
-        if (!ok) {
-          console.warn(`Could not navigate to page ${pageNum}, stopping.`);
-          break;
-        }
-      }
 
       const cards = await extractCards(page);
       if (cards.length === 0) {
@@ -139,9 +119,12 @@ export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<Ka
       const remaining = MAX_PRODUCTS - collected;
       const batch = cards.slice(0, remaining);
       collected += batch.length;
-
-      console.log(`Page ${pageNum}/${totalPages}: ${batch.length} products (total: ${collected})`);
+      console.log(`Page ${pageNum}: ${batch.length} products (total: ${collected})`);
       yield batch;
+
+      if (!(await hasNextPage(page))) break;
+      await clickNext(page);
+      pageNum++;
     }
   } finally {
     await browser.close();
