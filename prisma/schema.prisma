@@ -7,6 +7,16 @@ datasource db {
   provider = "postgresql"
 }
 
+model City {
+  id      Int    @id @default(autoincrement())
+  kaspiId String @unique @map("kaspi_id") // e.g. "750000000"
+  name    String // e.g. "Almaty"
+
+  snapshots PriceSnapshot[]
+
+  @@map("cities")
+}
+
 model Product {
   id         Int      @id @default(autoincrement())
   kaspiId    String   @unique @map("kaspi_id")
@@ -23,16 +33,19 @@ model Product {
 }
 
 model PriceSnapshot {
-  id            Int      @id @default(autoincrement())
-  productId     Int      @map("product_id")
-  price         Float
-  // true_discount = how much cheaper vs max price in last 30 days (not the labeled badge)
-  trueDiscount  Float?   @map("true_discount")
-  scrapedAt     DateTime @default(now()) @map("scraped_at")
+  id           Int      @id @default(autoincrement())
+  productId    Int      @map("product_id")
+  cityId       Int      @map("city_id")
+  price        Float
+  // true_discount = how much cheaper vs 30-day max price in the same city
+  trueDiscount Float?   @map("true_discount")
+  scrapedAt    DateTime @default(now()) @map("scraped_at")
 
   product Product @relation(fields: [productId], references: [id])
+  city    City    @relation(fields: [cityId], references: [id])
 
   @@index([productId])
+  @@index([cityId])
   @@index([scrapedAt])
   @@map("price_snapshots")
 }

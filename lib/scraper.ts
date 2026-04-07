@@ -16,8 +16,7 @@ export interface KaspiProduct {
   price: number;
 }
 
-const BASE_URL = "https://kaspi.kz/shop/c/food/";
-const PAGE_WAIT_MS = 2500;         // wait after navigation for JS to render
+const PAGE_WAIT_MS = 2500;
 const MAX_PRODUCTS = process.env.MAX_PRODUCTS ? parseInt(process.env.MAX_PRODUCTS) : Infinity;
 
 async function launchBrowser(): Promise<Browser> {
@@ -100,7 +99,8 @@ async function goToPage(page: Page, pageNum: number): Promise<boolean> {
   return true;
 }
 
-export async function* scrapeAllProducts(): AsyncGenerator<KaspiProduct[]> {
+export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<KaspiProduct[]> {
+  const url = `https://kaspi.kz/shop/c/food/?c=${cityKaspiId}`;
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
@@ -109,8 +109,8 @@ export async function* scrapeAllProducts(): AsyncGenerator<KaspiProduct[]> {
     );
     await page.setExtraHTTPHeaders({ "Accept-Language": "ru-RU,ru;q=0.9" });
 
-    console.log(`Loading ${BASE_URL} …`);
-    await page.goto(BASE_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    console.log(`Loading ${url} …`);
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
     await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
     await page.waitForSelector(".item-card", { timeout: 20000 });
 
