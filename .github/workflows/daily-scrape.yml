@@ -1,0 +1,41 @@
+name: Daily Magnum Price Scrape
+
+on:
+  schedule:
+    # Run every day at 03:00 UTC (06:00 Almaty time, before peak traffic)
+    - cron: "0 3 * * *"
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  scrape:
+    name: Scrape Kaspi Magnum products
+    runs-on: ubuntu-latest
+    timeout-minutes: 120 # 30k products × ~800ms delay = ~7 hours worst case; tune PAGE_SIZE to speed up
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Run migrations (safe — no-op if already up to date)
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Scrape products
+        run: npx tsx scripts/scrape.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

@@ -1,0 +1,38 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Product {
+  id         Int      @id @default(autoincrement())
+  kaspiId    String   @unique @map("kaspi_id")
+  name       String
+  brand      String?
+  imageUrl   String?  @map("image_url")
+  productUrl String   @map("product_url")
+  unit       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  snapshots PriceSnapshot[]
+
+  @@map("products")
+}
+
+model PriceSnapshot {
+  id            Int      @id @default(autoincrement())
+  productId     Int      @map("product_id")
+  price         Float
+  // true_discount = how much cheaper vs max price in last 30 days (not the labeled badge)
+  trueDiscount  Float?   @map("true_discount")
+  scrapedAt     DateTime @default(now()) @map("scraped_at")
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([productId])
+  @@index([scrapedAt])
+  @@map("price_snapshots")
+}
