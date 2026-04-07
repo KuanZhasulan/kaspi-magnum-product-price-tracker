@@ -1,152 +1,149 @@
 /**
- * Kaspi.kz Magnum food product scraper.
+ * Kaspi.kz food category scraper using Puppeteer.
  *
- * Kaspi serves category/search pages as a Next.js app — product data is embedded
- * in the `__NEXT_DATA__` script tag on every page. We fetch each page, extract
- * the JSON, and pull out product objects.
+ * Navigates https://kaspi.kz/shop/c/food/ and paginates through all pages,
+ * extracting product cards from the rendered DOM.
  *
- * How to find the right URL/params if things change:
- *   1. Open https://kaspi.kz/shop/c/food/ in Chrome DevTools → Network tab
- *   2. Filter by "Fetch/XHR" requests
- *   3. Look for requests to /yml/offer-search.jsp or /search endpoints
- *   4. Copy the URL and update SEARCH_URL below
+ * Set MAX_PRODUCTS env var to limit how many products to fetch (useful for testing).
  */
-import axios from "axios";
+import puppeteer, { type Browser, type Page } from "puppeteer";
 
 export interface KaspiProduct {
   id: string;
   name: string;
-  brand?: string;
   imageUrl?: string;
   productUrl: string;
   price: number;
-  unit?: string;
 }
 
-// Kaspi's internal search API for the food category filtered to Magnum merchant.
-// The `q` param encodes facets as colon-separated key:value pairs.
-const BASE_URL = "https://kaspi.kz/yml/offer-search.jsp";
-const PAGE_SIZE = 24;
-const REQUEST_DELAY_MS = 800; // be polite — don't hammer them
-const MAX_RETRIES = 3;
+const BASE_URL = "https://kaspi.kz/shop/c/food/";
+const PAGE_WAIT_MS = 2500;         // wait after navigation for JS to render
+const MAX_PRODUCTS = process.env.MAX_PRODUCTS ? parseInt(process.env.MAX_PRODUCTS) : Infinity;
 
-const HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  Accept: "application/json, text/plain, */*",
-  "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-  Referer: "https://kaspi.kz/shop/c/food/",
-};
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchPage(page: number): Promise<KaspiProduct[]> {
-  const params = {
-    text: "",
-    // facets: popular sort, all categories, merchant = Magnum
-    q: ":popular:category:ALL:merchantName:Magnum",
-    page,
-    sc: "food",
-    ui: "d",
-    i: "1",
-  };
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const res = await axios.get(BASE_URL, {
-        params,
-        headers: HEADERS,
-        timeout: 15_000,
-      });
-
-      const data = res.data;
-
-      // Kaspi returns a JSON envelope; extract the product list.
-      // Shape (as observed): { data: { cards: [...] } }
-      // Each card: { id, title, unitName, previewImage, masterProduct: { image }, offer: { price } }
-      const cards: Record<string, unknown>[] =
-        data?.data?.cards ??
-        data?.cards ??
-        data?.results ??
-        [];
-
-      return cards.map(parseCard);
-    } catch (err: unknown) {
-      if (attempt === MAX_RETRIES) throw err;
-      const delay = attempt * 2000;
-      console.warn(`Page ${page} attempt ${attempt} failed, retrying in ${delay}ms…`, (err as Error).message);
-      await sleep(delay);
-    }
-  }
-  return [];
-}
-
-function parseCard(card: Record<string, unknown>): KaspiProduct {
-  const offer = (card.offer ?? card) as Record<string, unknown>;
-  const master = (card.masterProduct ?? {}) as Record<string, unknown>;
-
-  const price =
-    typeof offer.price === "number"
-      ? offer.price
-      : Number(offer.price ?? offer.unitPrice ?? 0);
-
-  const id = String(card.id ?? card.kaspiId ?? card.sku ?? "");
-  const name = String(card.title ?? card.name ?? "");
-  const imageUrl =
-    String(card.previewImage ?? master.image ?? offer.imageUrl ?? "").trim() ||
-    undefined;
-  const slug = String(card.characteristicArticle ?? card.slug ?? id);
-  const unit = String(offer.unitName ?? card.unitName ?? "").trim() || undefined;
-
-  return {
-    id,
-    name,
-    brand: undefined, // Kaspi doesn't surface brand in search cards
-    imageUrl,
-    productUrl: `https://kaspi.kz/shop/p/${slug}/`,
-    price,
-    unit,
-  };
-}
-
-/** Fetch one page to discover the total product count, then return it. */
-async function getTotalCount(): Promise<number> {
-  const res = await axios.get(BASE_URL, {
-    params: {
-      text: "",
-      q: ":popular:category:ALL:merchantName:Magnum",
-      page: 0,
-      sc: "food",
-      ui: "d",
-      i: "1",
-    },
-    headers: HEADERS,
-    timeout: 15_000,
+async function launchBrowser(): Promise<Browser> {
+  return puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+    ],
   });
-  const data = res.data;
-  return (
-    data?.data?.total ??
-    data?.total ??
-    data?.totalCount ??
-    data?.pagination?.total ??
-    30_000 // fallback: assume 30k
+}
+
+/** Parse price text like "285 ₸" → 285 */
+function parsePrice(text: string): number {
+  const digits = text.replace(/[^\d]/g, "");
+  return digits ? parseInt(digits, 10) : 0;
+}
+
+/** Extract all product cards visible on the current page */
+async function extractCards(page: Page): Promise<KaspiProduct[]> {
+  return page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll(".item-card"));
+    return cards.map((card) => {
+      const id = card.getAttribute("data-product-id") ?? "";
+      const nameLink = card.querySelector<HTMLAnchorElement>(".item-card__name-link");
+      const name = nameLink?.textContent?.trim() ?? "";
+      const relativeUrl = nameLink?.getAttribute("href") ?? "";
+      const productUrl = relativeUrl.startsWith("http")
+        ? relativeUrl
+        : "https://kaspi.kz" + relativeUrl;
+      const img = card.querySelector<HTMLImageElement>(".item-card__image");
+      const imageUrl = img?.getAttribute("src") ?? undefined;
+      // First price span is the actual price (second is instalment)
+      const priceEl = card.querySelector(".item-card__prices-price");
+      const priceText = priceEl?.textContent?.trim() ?? "0";
+      return { id, name, imageUrl, productUrl, priceText };
+    });
+  }).then((raw) =>
+    raw
+      .filter((r) => r.id && r.name)
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        imageUrl: r.imageUrl || undefined,
+        productUrl: r.productUrl,
+        price: parsePrice(r.priceText),
+      }))
   );
 }
 
-export async function* scrapeAllProducts(): AsyncGenerator<KaspiProduct[]> {
-  const total = await getTotalCount();
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-  console.log(`Total products: ~${total}, pages: ${totalPages}`);
+/** Returns the total number of pages from pagination */
+async function getTotalPages(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const pages = Array.from(document.querySelectorAll(".pagination__el"))
+      .map((el) => parseInt(el.textContent?.trim() ?? "0", 10))
+      .filter((n) => !isNaN(n) && n > 0);
+    return pages.length ? Math.max(...pages) : 1;
+  });
+}
 
-  for (let page = 0; page < totalPages; page++) {
-    const products = await fetchPage(page);
-    if (products.length === 0) {
-      console.log(`Page ${page} returned 0 products — stopping early.`);
-      break;
+/** Navigate to a specific page number by clicking the pagination element */
+async function goToPage(page: Page, pageNum: number): Promise<boolean> {
+  const clicked = await page.evaluate((target) => {
+    const els = Array.from(document.querySelectorAll(".pagination__el"));
+    const el = els.find((e) => e.textContent?.trim() === String(target));
+    if (el) {
+      (el as HTMLElement).click();
+      return true;
     }
-    yield products;
-    if (page < totalPages - 1) await sleep(REQUEST_DELAY_MS);
+    return false;
+  }, pageNum);
+
+  if (!clicked) return false;
+
+  // Wait for new cards to load
+  await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
+  await page.waitForSelector(".item-card", { timeout: 15000 }).catch(() => {});
+  return true;
+}
+
+export async function* scrapeAllProducts(): AsyncGenerator<KaspiProduct[]> {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    );
+    await page.setExtraHTTPHeaders({ "Accept-Language": "ru-RU,ru;q=0.9" });
+
+    console.log(`Loading ${BASE_URL} …`);
+    await page.goto(BASE_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
+    await page.waitForSelector(".item-card", { timeout: 20000 });
+
+    const totalPages = await getTotalPages(page);
+    console.log(`Total pages: ${totalPages}`);
+
+    let collected = 0;
+
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      if (collected >= MAX_PRODUCTS) break;
+
+      if (pageNum > 1) {
+        const ok = await goToPage(page, pageNum);
+        if (!ok) {
+          console.warn(`Could not navigate to page ${pageNum}, stopping.`);
+          break;
+        }
+      }
+
+      const cards = await extractCards(page);
+      if (cards.length === 0) {
+        console.warn(`Page ${pageNum} returned 0 cards, stopping.`);
+        break;
+      }
+
+      const remaining = MAX_PRODUCTS - collected;
+      const batch = cards.slice(0, remaining);
+      collected += batch.length;
+
+      console.log(`Page ${pageNum}/${totalPages}: ${batch.length} products (total: ${collected})`);
+      yield batch;
+    }
+  } finally {
+    await browser.close();
   }
 }
