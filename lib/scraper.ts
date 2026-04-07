@@ -89,8 +89,8 @@ async function clickNext(page: Page): Promise<void> {
   await page.waitForSelector(".item-card", { timeout: 15000 }).catch(() => {});
 }
 
-export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<KaspiProduct[]> {
-  const url = `https://kaspi.kz/shop/c/food/?c=${cityKaspiId}`;
+/** Scrape all pages of any kaspi category URL, yielding batches of products. */
+async function* scrapeUrl(url: string, label = url): AsyncGenerator<KaspiProduct[]> {
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
@@ -99,7 +99,7 @@ export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<Ka
     );
     await page.setExtraHTTPHeaders({ "Accept-Language": "ru-RU,ru;q=0.9" });
 
-    console.log(`Loading ${url} …`);
+    console.log(`[${label}] Loading ${url} …`);
     await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
     await new Promise((r) => setTimeout(r, PAGE_WAIT_MS));
     await page.waitForSelector(".item-card", { timeout: 20000 });
@@ -112,20 +112,68 @@ export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<Ka
 
       const cards = await extractCards(page);
       if (cards.length === 0) {
-        console.warn(`Page ${pageNum} returned 0 cards, stopping.`);
+        console.warn(`[${label}] Page ${pageNum} returned 0 cards, stopping.`);
         break;
       }
 
       const remaining = MAX_PRODUCTS - collected;
       const batch = cards.slice(0, remaining);
       collected += batch.length;
-      console.log(`Page ${pageNum}: ${batch.length} products (total: ${collected})`);
+      console.log(`[${label}] Page ${pageNum}: ${batch.length} products (total: ${collected})`);
       yield batch;
 
       if (!(await hasNextPage(page))) break;
       await clickNext(page);
       pageNum++;
     }
+  } finally {
+    await browser.close();
+  }
+}
+
+/** Original single-scraper entry point — scrapes the whole food category sequentially. */
+export async function* scrapeAllProducts(cityKaspiId: string): AsyncGenerator<KaspiProduct[]> {
+  yield* scrapeUrl(`https://kaspi.kz/shop/c/food/?c=${cityKaspiId}`, "food");
+}
+
+/** Scrape a specific subcategory URL (used by the parallel script). */
+export async function* scrapeCategory(categoryUrl: string, label: string): AsyncGenerator<KaspiProduct[]> {
+  yield* scrapeUrl(categoryUrl, label);
+}
+
+export interface Subcategory {
+  code: string;
+  title: string;
+  url: string;
+}
+
+/** Load the food page and extract all visible subcategory links from BACKEND config. */
+export async function discoverSubcategories(cityKaspiId: string): Promise<Subcategory[]> {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    );
+    await page.setExtraHTTPHeaders({ "Accept-Language": "ru-RU,ru;q=0.9" });
+    await page.goto(`https://kaspi.kz/shop/c/food/?c=${cityKaspiId}`, {
+      waitUntil: "networkidle2",
+      timeout: 60000,
+    });
+
+    const nodes = await page.evaluate(() => {
+      const catalog = (window as unknown as Record<string, unknown>)
+        .BACKEND as { components?: { catalog?: { categoryInfo?: { subNodes?: unknown[] } } } } | undefined;
+      return catalog?.components?.catalog?.categoryInfo?.subNodes ?? [];
+    });
+
+    return (nodes as Array<Record<string, unknown>>)
+      .filter((n) => n.visible === true && n.allGoods !== true && typeof n.link === "string")
+      .map((n) => ({
+        code: String(n.code),
+        title: String(n.title),
+        url: `https://kaspi.kz/shop/${n.link}?c=${cityKaspiId}`,
+      }));
   } finally {
     await browser.close();
   }
