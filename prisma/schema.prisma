@@ -25,6 +25,7 @@ model Product {
   imageUrl   String?  @map("image_url")
   productUrl String   @map("product_url")
   unit       String?
+  category   String?
   createdAt  DateTime @default(now()) @map("created_at")
 
   snapshots PriceSnapshot[]
