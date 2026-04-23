@@ -26,6 +26,7 @@ interface Product {
   imageUrl: string | null;
   productUrl: string;
   unit: string | null;
+  category: string | null;
   price: number;
   trueDiscount: number;
   scrapedAt: string;
@@ -54,15 +55,25 @@ export default function ProductsView() {
 
   const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const [inputValue, setInputValue] = useState(search);
+  const [category, setCategory] = useState(searchParams.get("category") ?? "");
   const [page, setPage] = useState(Number(searchParams.get("page") ?? "1"));
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [categories, setCategories] = useState<string[]>([]);
 
-  const fetchProducts = useCallback(async (q: string, p: number) => {
+  useEffect(() => {
+    fetch("/api/categories")
+      .then((r) => r.json())
+      .then((json) => setCategories(json.categories ?? []))
+      .catch(console.error);
+  }, []);
+
+  const fetchProducts = useCallback(async (q: string, cat: string, p: number) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (q) params.set("search", q);
+      if (cat) params.set("category", cat);
       params.set("page", String(p));
       const res = await fetch(`/api/products?${params}`);
       const json: ApiResponse = await res.json();
@@ -76,7 +87,7 @@ export default function ProductsView() {
 
   // Sync URL params → state on mount
   useEffect(() => {
-    fetchProducts(search, page);
+    fetchProducts(search, category, page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -89,14 +100,15 @@ export default function ProductsView() {
     return () => clearTimeout(timer);
   }, [inputValue]);
 
-  // Fetch when search/page changes
+  // Fetch when search/category/page changes
   useEffect(() => {
-    fetchProducts(search, page);
+    fetchProducts(search, category, page);
     const params = new URLSearchParams();
     if (search) params.set("search", search);
+    if (category) params.set("category", category);
     if (page > 1) params.set("page", String(page));
     router.replace(`?${params}`, { scroll: false });
-  }, [search, page, fetchProducts, router]);
+  }, [search, category, page, fetchProducts, router]);
 
   return (
     <Box>
@@ -116,8 +128,36 @@ export default function ProductsView() {
             ),
           },
         }}
-        sx={{ mb: 3 }}
+        sx={{ mb: 2 }}
       />
+
+      {/* Category chips */}
+      {categories.length > 0 && (
+        <Box
+          sx={{
+            display: "flex",
+            gap: 1,
+            flexWrap: "wrap",
+            mb: 3,
+          }}
+        >
+          <Chip
+            label="Все категории"
+            onClick={() => { setCategory(""); setPage(1); }}
+            color={category === "" ? "primary" : "default"}
+            variant={category === "" ? "filled" : "outlined"}
+          />
+          {categories.map((cat) => (
+            <Chip
+              key={cat}
+              label={cat}
+              onClick={() => { setCategory(cat); setPage(1); }}
+              color={category === cat ? "primary" : "default"}
+              variant={category === cat ? "filled" : "outlined"}
+            />
+          ))}
+        </Box>
+      )}
 
       {/* Status row */}
       {data && !loading && (

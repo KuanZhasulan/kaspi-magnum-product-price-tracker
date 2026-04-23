@@ -9,6 +9,7 @@ interface ProductRow {
   image_url: string | null;
   product_url: string;
   unit: string | null;
+  category: string | null;
   price: number;
   true_discount: number;
   scraped_at: Date;
@@ -17,13 +18,15 @@ interface ProductRow {
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const search = searchParams.get("search")?.trim() ?? "";
+  const category = searchParams.get("category")?.trim() ?? "";
   const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
   const limit = 12;
   const offset = (page - 1) * limit;
 
-  const where = search
-    ? { name: { contains: search, mode: "insensitive" as const } }
-    : {};
+  const where = {
+    ...(search ? { name: { contains: search, mode: "insensitive" as const } } : {}),
+    ...(category ? { category } : {}),
+  };
 
   const [rawRows, totalCount] = await Promise.all([
     prisma.$queryRaw`
@@ -35,6 +38,7 @@ export async function GET(request: NextRequest) {
         p.image_url,
         p.product_url,
         p.unit,
+        p.category,
         ps.price,
         COALESCE(ps.true_discount, 0) AS true_discount,
         ps.scraped_at
@@ -47,6 +51,7 @@ export async function GET(request: NextRequest) {
         LIMIT 1
       ) ps ON TRUE
       WHERE (${search} = '' OR p.name ILIKE ${"%" + search + "%"})
+        AND (${category} = '' OR p.category = ${category})
       ORDER BY true_discount DESC
       LIMIT ${limit} OFFSET ${offset}
     `,
@@ -63,6 +68,7 @@ export async function GET(request: NextRequest) {
     imageUrl: r.image_url,
     productUrl: r.product_url,
     unit: r.unit,
+    category: r.category,
     price: Number(r.price),
     trueDiscount: Number(r.true_discount),
     scrapedAt: r.scraped_at,

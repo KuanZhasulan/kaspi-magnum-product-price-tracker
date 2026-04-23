@@ -21,28 +21,33 @@ const CITY_KASPI_ID = process.env.CITY_KASPI_ID ?? "750000000";
 const CONCURRENCY = process.env.CONCURRENCY ? parseInt(process.env.CONCURRENCY) : 3;
 const BATCH_SIZE = 50;
 
+async function getCity(kaspiId: string) {
+  return prisma.city.findUnique({ where: { kaspiId } });
+}
+
 async function getOrCreateCity(kaspiId: string): Promise<number> {
-  const existing = await prisma.city.findUnique({ where: { kaspiId } });
+  const existing = await getCity(kaspiId);
   if (existing) return existing.id;
   const created = await prisma.city.create({ data: { kaspiId, name: kaspiId } });
   return created.id;
 }
 
-async function flush(products: Product[], cityDbId: number) {
+async function flush(products: Product[], cityDbId: number, category?: string) {
   if (products.length === 0) return;
 
   const values = products
-    .map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`)
+    .map((_, i) => `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`)
     .join(", ");
-  const params = products.flatMap((p) => [p.id, p.name, p.imageUrl ?? null, p.productUrl]);
+  const params = products.flatMap((p) => [p.id, p.name, p.imageUrl ?? null, p.productUrl, category ?? null]);
 
   await prisma.$executeRawUnsafe(
-    `INSERT INTO products (kaspi_id, name, image_url, product_url)
+    `INSERT INTO products (kaspi_id, name, image_url, product_url, category)
      VALUES ${values}
      ON CONFLICT (kaspi_id) DO UPDATE SET
        name        = EXCLUDED.name,
        image_url   = EXCLUDED.image_url,
-       product_url = EXCLUDED.product_url`,
+       product_url = EXCLUDED.product_url,
+       category    = EXCLUDED.category`,
     ...params
   );
 
@@ -103,7 +108,7 @@ async function scrapeSubcategory(
 
     if (buffer.length >= BATCH_SIZE) {
       try {
-        await flush(buffer, cityDbId);
+        await flush(buffer, cityDbId, label);
       } catch (err) {
         console.error(`[${label}] Batch flush error:`, (err as Error).message);
         errors++;
@@ -114,7 +119,7 @@ async function scrapeSubcategory(
 
   if (buffer.length > 0) {
     try {
-      await flush(buffer, cityDbId);
+      await flush(buffer, cityDbId, label);
     } catch (err) {
       console.error(`[${label}] Final flush error:`, (err as Error).message);
       errors++;
